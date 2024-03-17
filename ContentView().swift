@@ -1,289 +1,117 @@
-//
-//  ContentView.swift
-//  FitnessMedia
-//
-//  Created by Sharik Mahmood on 2/13/24.
-//
-
 import SwiftUI
-import SwiftData
-import HealthKit
-
-
-class HealthKitManager: ObservableObject {
-    private var healthStore: HKHealthStore?
-    
-    @Published var dob: Date? = nil
-    
-    init() {
-        if HKHealthStore.isHealthDataAvailable() {
-            healthStore = HKHealthStore()
-        }
-    }
-    
-    @Published var userName: String = ""
-
-        func fetchUserName() {
-            // Check if the user name is already saved in UserDefaults
-            if let savedUserName = UserDefaults.standard.string(forKey: "UserName") {
-                DispatchQueue.main.async {
-                    self.userName = savedUserName
-                }
-            }
-        }
-
-        func saveUserName(_ name: String) {
-            // Save the user name to UserDefaults
-            UserDefaults.standard.set(name, forKey: "UserName")
-            // Notify any observers that the user name has updated
-            DispatchQueue.main.async {
-                self.userName = name
-            }
-        }
-    
-    func requestAuthorization() {
-        guard let dateOfBirthType = HKObjectType.characteristicType(forIdentifier: .dateOfBirth),
-              let stepsType = HKObjectType.quantityType(forIdentifier: .stepCount),
-              let activeEnergyType = HKObjectType.quantityType(forIdentifier: .activeEnergyBurned) else {
-            return
-        }
-
-        healthStore?.requestAuthorization(toShare: nil, read: Set([dateOfBirthType, stepsType, activeEnergyType])) { success, error in
-            guard success else {
-                // Handle the error or lack of permissions
-                return
-            }
-            self.readDOB()
-            self.readSteps()
-            self.readActiveEnergyBurned()
-        }
-    }
-
-    @Published var activeEnergyBurned: Double = 0
-
-    func readActiveEnergyBurned() {
-        guard let activeEnergyType = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) else {
-            return
-        }
-        
-        let now = Date()
-        let startOfDay = Calendar.current.startOfDay(for: now)
-        let predicate = HKQuery.predicateForSamples(withStart: startOfDay, end: now, options: .strictStartDate)
-        
-        let query = HKStatisticsQuery(quantityType: activeEnergyType, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, result, _ in
-            DispatchQueue.main.async {
-                guard let result = result, let sum = result.sumQuantity() else {
-                    self.activeEnergyBurned = 0
-                    return
-                }
-                self.activeEnergyBurned = sum.doubleValue(for: HKUnit.kilocalorie())
-            }
-        }
-        
-        healthStore?.execute(query)
-    }
-
-    @Published var steps: Int = 0
-
-    func readSteps() {
-        guard let stepsType = HKQuantityType.quantityType(forIdentifier: .stepCount) else {
-            return
-        }
-        
-        let now = Date()
-        let startOfDay = Calendar.current.startOfDay(for: now)
-        let predicate = HKQuery.predicateForSamples(withStart: startOfDay, end: now, options: .strictStartDate)
-        
-        let query = HKStatisticsQuery(quantityType: stepsType, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, result, _ in
-            DispatchQueue.main.async {
-                guard let result = result, let sum = result.sumQuantity() else {
-                    self.steps = 0
-                    return
-                }
-                self.steps = Int(sum.doubleValue(for: HKUnit.count()))
-            }
-        }
-        
-        healthStore?.execute(query)
-    }
-
-    
-    //this functions reads the DOB
-    func readDOB() {
-        do {
-            let dobComponents = try healthStore?.dateOfBirthComponents()
-            let calendar = Calendar.current
-            self.dob = calendar.date(from: dobComponents!)
-        } catch {
-            // Handle errors
-        }
-    }
-}
-
-struct Box: Identifiable {
-    let id = UUID()
-    var title: String
-    var color: Color
-}
-
 
 struct ContentView: View {
-    @StateObject private var healthKitManager = HealthKitManager()
-    @State private var showingNameEntryView = false
     @State private var userName: String = UserDefaults.standard.string(forKey: "UserName") ?? ""
-    @State private var boxes: [Box] = [] // This will now track the boxes
+    @State private var boxes: [Box] = []
+    private let persistenceManager = PersistenceManager()
+    @StateObject private var healthKitManager = HealthKitManager()
+
 
     var body: some View {
         NavigationView {
-            GeometryReader { geometry in
-                ZStack {
-                    Color.black.opacity(0.85)
-                        .edgesIgnoringSafeArea(.all)
-                    VStack {
-                        HStack {
-                            Text(userName.isEmpty ? "Tap to Enter Your Name" : userName)
-                                .font(.title)
-                                .fontWeight(.bold)
-                                .padding()
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+            ZStack {
+                Color.black.opacity(0.85).edgesIgnoringSafeArea(.all)
+                VStack {
+                    userInfoHeader
 
-                            Button(action: {
-                                // Add a new box when the "+" button is pressed
-                                let newBox = Box(title: "Box \(boxes.count + 1)", color: Color.random) // Using .random extension for Color
-                                boxes.append(newBox)
-                            }) {
-                                Text("+")
-                                    .font(.title)
-                                    .foregroundColor(.white)
-                                    .padding()
-                            }
-                        }
-                        .padding(.horizontal)
-                        
-                        ScrollView {
-                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 20) {
-                                ForEach(boxes) { box in
-                                    BoxView(content: Text(box.title).bold(), color: box.color)
-                                        .frame(height: (geometry.size.height - 100) / 2) // Adjust height based on the number of boxes
-                                }
-                            }
-                        }
-                        .padding(.bottom)
+                    ScrollView {
+                        boxesGrid
                     }
-                    .padding()
+                    .padding(.bottom)
                 }
-                .navigationBarHidden(true)
-                .onAppear {
-                    showingNameEntryView = userName.isEmpty
-                    healthKitManager.requestAuthorization()
-                }
-                .sheet(isPresented: $showingNameEntryView) {
-                    NameEntryView(isPresented: $showingNameEntryView, userName: $userName)
+                .padding()
+            }
+            .navigationBarHidden(false)
+            .onAppear {
+                loadBoxes()
+            }
+        }
+        .onAppear {
+            healthKitManager.requestAuthorization()
+        }
+
+    }
+
+    private var userInfoHeader: some View {
+        HStack {
+            Text(userName.isEmpty ? "Tap to Enter Your Name" : userName)
+                .font(.title)
+                .fontWeight(.bold)
+                .foregroundColor(.white)
+
+            Spacer()
+
+            Button(action: addBox) {
+                Text("+").font(.title).foregroundColor(.white)
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private var boxesGrid: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 20) {
+            ForEach(boxes) { box in
+                NavigationLink(destination: BoxDetailView(box: box, deleteAction: { deleteBox(box: box) }, healthKitManager: healthKitManager))  {
+                    BoxView(content: Text(box.title).bold(), color: box.color)
+                        .frame(height: 295) // Set a fixed height for the boxes
                 }
             }
         }
     }
-}
 
-// Assuming you have an extension for Color to generate random colors
-extension Color {
-    static var random: Color {
-        Color(red: Double.random(in: 0...1), green: Double.random(in: 0...1), blue: Double.random(in: 0...1))
+    private func loadBoxes() {
+        boxes = persistenceManager.loadBoxes()
+    }
+
+    private func addBox() {
+        let newBox = Box(title: "Box \(boxes.count + 1)", color: .random)
+        boxes.append(newBox)
+        persistenceManager.saveBoxes(boxes)
+    }
+
+    private func deleteBox(box: Box) {
+        guard let index = boxes.firstIndex(where: { $0.id == box.id }) else { return }
+        boxes.remove(at: index)
+        persistenceManager.saveBoxes(boxes)
     }
 }
 
+// A generic view wrapper that applies consistent styling to its content
+struct BoxView<Content: View>: View
+{
+    let content: Content // The content to display inside the BoxView
+    var color: Color // The background color for the BoxView
 
-
-struct BoxView<Content: View>: View {
-    let content: Content
-    var color: Color
-    
-    init(content: Content, color: Color) {
-        self.content = content
-        self.color = color
-    }
-    
-    var body: some View {
+    // Configures the view for a single box, setting up its appearance
+    var body: some View
+    {
         content
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(RoundedRectangle(cornerRadius: 25).fill(color))
+            .background(color)
+            .cornerRadius(10)
     }
 }
 
-struct Page1: View {
-    @ObservedObject var healthKitManager: HealthKitManager
-    
-    var body: some View {
-        
-        if let dob = healthKitManager.dob {
-            Text("DOB: \(dob.formatted(date: .abbreviated, time: .omitted))")
-        }
-        Text("Steps: \(healthKitManager.steps)")
-        Text("Calories: \(String(format: "%.2f", healthKitManager.activeEnergyBurned)) kcal")
-        Text("Page 1")
-            .font(.title)
-            .navigationBarTitle("Welcome to Page1", displayMode: .inline)
+// Represents a Box with a title and color
+struct Box: Codable, Identifiable
+{
+    var id = UUID() // Unique identifier for each Box, conforming to Identifiable
+    var title: String // Title of the Box
+    var colorData: Data // Color of the Box, stored as Data for Codable conformance
+
+    // Initializes a new Box with a title and color
+    init(title: String, color: Color)
+    {
+        self.title = title
+        self.colorData = NSKeyedArchiver.archivedData(withRootObject: UIColor(color))
+    }
+
+    // Computed property to convert stored Data back into a SwiftUI Color
+    var color: Color
+    {
+        Color(NSKeyedUnarchiver.unarchiveObject(with: colorData) as? UIColor ?? UIColor.white)
     }
 }
-
-struct Page2: View {
-    var body: some View {
-        Text("Page 2")
-            .font(.title)
-            .navigationBarTitle("Welcome to Page2 :)", displayMode: .inline)
-    }
-}
-
-struct Page3: View {
-    var body: some View {
-        Text("Page 3")
-            .font(.title)
-            .navigationBarTitle("Welcome to Page3 :(", displayMode: .inline)
-    }
-}
-
-struct Challenges: View {
-    var body: some View {
-        Text("Challenges")
-            .font(.title)
-            .navigationBarTitle("Challenge Page!!", displayMode: .inline)
-    }
-}
-
-
-
-struct NameEntryView: View {
-    @Binding var isPresented: Bool
-    @Binding var userName: String
-
-    var body: some View {
-        ZStack {
-            Color.clear
-            VStack(spacing: 20) {
-                Text("Welcome! Please enter your name:")
-                
-                TextField("Name", text: $userName)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .padding()
-                
-                Button("Continue") {
-                    UserDefaults.standard.set(userName, forKey: "UserName")
-                    isPresented = false
-                }
-                .padding() // Add padding around the button's text
-                .foregroundColor(.white) // Set the text color to white
-                .background(Color.black) // Set the background of the button to black
-                .cornerRadius(10) // Round the corners of the background
-            }
-            .padding()
-
-        }
-    }
-}
-
-
-
 
 
